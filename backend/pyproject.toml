@@ -1,0 +1,27 @@
+[project]
+name = "order-supervisor-backend"
+version = "0.1.0"
+description = "Backend for the Order Supervisor application"
+requires-python = ">=3.11"
+
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "temporalio",
+    "groq",
+    "asyncpg",
+    "sqlalchemy[asyncio]",
+    "alembic",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "aiohttp",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["backend*"]
