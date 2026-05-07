@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from temporalio.client import WorkflowHandle
+from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError
 
 from backend.api.schemas import (
@@ -98,19 +99,39 @@ def _classify_event(event_type: str, wake_aggressiveness: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Shared workflow-handle helper
+# Shared workflow-handle + signal helper
 # ---------------------------------------------------------------------------
 
 
-async def _get_handle(workflow_id: str) -> WorkflowHandle:
-    """Return a workflow handle, raising 404 if the workflow_id is missing."""
-    if not workflow_id:
+def _require_workflow_id(run) -> str:
+    """Return temporal_workflow_id or raise 409 if the run hasn't started yet."""
+    if not run.temporal_workflow_id:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No Temporal workflow associated with this run.",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Temporal workflow has not been started for this run.",
         )
+    return run.temporal_workflow_id
+
+
+async def _get_handle(workflow_id: str) -> WorkflowHandle:
+    """Return a workflow handle (lazy — does not verify the workflow exists)."""
     client = await get_temporal_client()
     return client.get_workflow_handle(workflow_id)
+
+
+def _handle_temporal_rpc_error(exc: RPCError, run_id: str, action: str) -> None:
+    """Translate common Temporal RPC errors into appropriate HTTP responses."""
+    msg = str(exc).lower()
+    if "not found" in msg or "does not exist" in msg:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Temporal workflow for run {run_id!r} not found — it may have already completed.",
+        )
+    logger.error("Failed to %s workflow for run %s: %s", action, run_id, exc)
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=f"Failed to {action} Temporal workflow: {exc}",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -287,18 +308,15 @@ async def send_event(
     await db.flush()
 
     # 4-6. Signal the Temporal workflow.
+    wf_id = _require_workflow_id(run)
     try:
-        handle = await _get_handle(run.temporal_workflow_id)
+        handle = await _get_handle(wf_id)
         await handle.signal(
             OrderSupervisorWorkflow.receive_event,
             EventSignal(event_type=body.event_type, payload=body.payload),
         )
     except RPCError as exc:
-        logger.error("Failed to signal workflow for run %s: %s", run_id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to signal Temporal workflow: {exc}",
-        )
+        _handle_temporal_rpc_error(exc, run_id, "signal")
 
     return JSONResponse(content={"success": True, "event_type": body.event_type, "will_wake": will_wake})
 
@@ -328,15 +346,12 @@ async def add_instruction(
     await db.flush()
 
     # 2. Signal workflow.
+    wf_id = _require_workflow_id(run)
     try:
-        handle = await _get_handle(run.temporal_workflow_id)
+        handle = await _get_handle(wf_id)
         await handle.signal(OrderSupervisorWorkflow.add_instruction, body.instruction)
     except RPCError as exc:
-        logger.error("Failed to add instruction for run %s: %s", run_id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to signal Temporal workflow: {exc}",
-        )
+        _handle_temporal_rpc_error(exc, run_id, "add_instruction")
 
     return JSONResponse(content={"success": True})
 
@@ -365,15 +380,12 @@ async def interrupt_run(
     await db.flush()
 
     # 2. Signal workflow.
+    wf_id = _require_workflow_id(run)
     try:
-        handle = await _get_handle(run.temporal_workflow_id)
+        handle = await _get_handle(wf_id)
         await handle.signal(OrderSupervisorWorkflow.interrupt_workflow)
     except RPCError as exc:
-        logger.error("Failed to interrupt workflow for run %s: %s", run_id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to signal Temporal workflow: {exc}",
-        )
+        _handle_temporal_rpc_error(exc, run_id, "interrupt")
 
     return JSONResponse(content={"success": True})
 
@@ -402,15 +414,12 @@ async def resume_run(
     await db.flush()
 
     # 2. Signal workflow.
+    wf_id = _require_workflow_id(run)
     try:
-        handle = await _get_handle(run.temporal_workflow_id)
+        handle = await _get_handle(wf_id)
         await handle.signal(OrderSupervisorWorkflow.resume_workflow)
     except RPCError as exc:
-        logger.error("Failed to resume workflow for run %s: %s", run_id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to signal Temporal workflow: {exc}",
-        )
+        _handle_temporal_rpc_error(exc, run_id, "resume")
 
     return JSONResponse(content={"success": True})
 
@@ -439,14 +448,11 @@ async def terminate_run(
     await db.flush()
 
     # 2. Signal workflow.
+    wf_id = _require_workflow_id(run)
     try:
-        handle = await _get_handle(run.temporal_workflow_id)
+        handle = await _get_handle(wf_id)
         await handle.signal(OrderSupervisorWorkflow.terminate_workflow)
     except RPCError as exc:
-        logger.error("Failed to terminate workflow for run %s: %s", run_id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to signal Temporal workflow: {exc}",
-        )
+        _handle_temporal_rpc_error(exc, run_id, "terminate")
 
     return JSONResponse(content={"success": True})

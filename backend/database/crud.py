@@ -2,12 +2,37 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database.models import ActivityLog, Run, Supervisor
+
+
+# ---------------------------------------------------------------------------
+# Serialisation helper
+# ---------------------------------------------------------------------------
+
+
+def serialize_model(obj: Any) -> dict[str, Any]:
+    """
+    Convert a SQLAlchemy model instance to a plain JSON-safe dict.
+
+    - UUID fields → str
+    - datetime fields → ISO-format str
+    - All other values passed through as-is (JSON / int / str / None).
+    """
+    result: dict[str, Any] = {}
+    for col in obj.__table__.columns:
+        value = getattr(obj, col.name)
+        if isinstance(value, uuid.UUID):
+            value = str(value)
+        elif isinstance(value, datetime):
+            value = value.isoformat()
+        result[col.name] = value
+    return result
 
 
 # ---------------------------------------------------------------------------

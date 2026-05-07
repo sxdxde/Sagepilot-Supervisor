@@ -197,7 +197,7 @@ class OrderSupervisorWorkflow:
                         self.new_event_arrived
                         or self.should_terminate
                         or self.terminal_event_received
-                        or self.is_interrupted == False  # noqa: E712 — as specified
+                        or self.is_interrupted  # wake immediately if interrupted
                     ),
                     timeout=timedelta(minutes=input.wake_up_interval_minutes),
                 )
@@ -237,6 +237,7 @@ class OrderSupervisorWorkflow:
             # --- j) Continue-as-new to avoid history size limits ------------
             if self._activity_log_count > 100:
                 workflow.continue_as_new(input)
+                return  # continue_as_new raises internally; this is defensive
 
         # 4. Generate and persist final output.
         final_output = await workflow.execute_activity(

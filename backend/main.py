@@ -3,8 +3,6 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api.runs import router as runs_router
-from backend.api.supervisors import router as supervisors_router
 from backend.config import settings
 from backend.database.db import init_db
 
@@ -27,7 +25,7 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
-# CORS
+# CORS — must be added BEFORE routers
 # ---------------------------------------------------------------------------
 
 app.add_middleware(
@@ -39,23 +37,38 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
+# Routers — imported after middleware so CORS applies to all routes
+# ---------------------------------------------------------------------------
+
+from backend.api.runs import router as runs_router  # noqa: E402
+from backend.api.supervisors import router as supervisors_router  # noqa: E402
+
+app.include_router(supervisors_router)
+app.include_router(runs_router)
+
+
+# ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    # 1. Create DB tables if they don't exist.
     await init_db()
     logger.info("Database initialized.")
+
+    # 2. Pre-warm the Temporal client so the first request isn't slow.
+    #    Errors here are logged but don't prevent the API from starting —
+    #    individual endpoints will retry the connection when needed.
+    try:
+        from backend.temporal.client import get_temporal_client
+        await get_temporal_client()
+        logger.info("Temporal client connected to %s", settings.temporal_host)
+    except Exception as exc:
+        logger.warning("Could not pre-connect Temporal client: %s", exc)
+
     logger.info("Server started — docs at /docs")
-
-
-# ---------------------------------------------------------------------------
-# Routers
-# ---------------------------------------------------------------------------
-
-app.include_router(supervisors_router)
-app.include_router(runs_router)
 
 
 # ---------------------------------------------------------------------------
