@@ -17,12 +17,16 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import logging
+
 from groq import AsyncGroq
 from temporalio import activity
 
 from backend.config import settings
 from backend.database import crud
 from backend.database.db import AsyncSessionLocal
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +208,11 @@ async def run_agent_activity(ctx: dict) -> dict:
     actions_taken: list[dict] = []
     new_memory_summary = memory_summary
 
+    logger.info(
+        "Agent waking: run=%s trigger=%s events=%d",
+        run_id, trigger, len(events_to_process),
+    )
+
     async with AsyncSessionLocal() as db:
         # ------------------------------------------------------------------ #
         # Step 1: log initial reasoning trigger                               #
@@ -254,11 +263,13 @@ Review the situation and take appropriate actions using the available tools."""
         ]
 
         # ------------------------------------------------------------------ #
-        # Steps 4 & 5: agentic tool-call loop                                #
+        # Steps 4 & 5: agentic tool-call loop (max 10 iterations)           #
         # ------------------------------------------------------------------ #
         groq = _get_groq()
+        max_iterations = 10
 
-        while True:
+        for _iteration in range(max_iterations):
+            logger.debug("Agent loop iteration %d for run %s", _iteration + 1, run_id)
             response = await groq.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -270,14 +281,28 @@ Review the situation and take appropriate actions using the available tools."""
 
             # No tool calls → agent is done.
             if not assistant_message.tool_calls:
-                # Append final assistant turn so callers have full history.
                 messages.append(
                     {"role": "assistant", "content": assistant_message.content or ""}
                 )
                 break
 
-            # Append assistant turn with tool_calls for the next iteration.
-            messages.append(assistant_message)  # type: ignore[arg-type]
+            # Serialise assistant turn as a plain dict so the next API call
+            # receives a correctly-typed messages list throughout all iterations.
+            messages.append({
+                "role": "assistant",
+                "content": assistant_message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in assistant_message.tool_calls
+                ],
+            })
 
             # Execute each tool call and collect results.
             for tool_call in assistant_message.tool_calls:
@@ -288,6 +313,8 @@ Review the situation and take appropriate actions using the available tools."""
                     tool_args = {}
 
                 tool_result = "done"
+
+                logger.info("Tool call: run=%s tool=%s", run_id, tool_name)
 
                 # ── Messaging / note tools ──────────────────────────────── #
                 if tool_name in _ACTION_TOOLS:
@@ -333,6 +360,10 @@ Review the situation and take appropriate actions using the available tools."""
     # ------------------------------------------------------------------ #
     # Step 6: return result dict consumed by the workflow                 #
     # ------------------------------------------------------------------ #
+    logger.info(
+        "Agent sleeping: run=%s actions=%d log_entries=%d",
+        run_id, len(actions_taken), activity_log_entries_written,
+    )
     return {
         "actions_taken": actions_taken,
         "memory_summary": new_memory_summary,
@@ -381,22 +412,21 @@ async def classify_event_activity(
     activity signature. Callers that need logging should use
     log_activity_activity separately.
     """
-    rule = _WAKE_RULES.get(event_type)
-
-    if rule is None:
-        # Always-wake event.
-        should_wake = True
-    elif rule == "never":
-        should_wake = False
-    else:
-        # Wake if the supervisor's aggressiveness meets or exceeds the threshold.
-        required_rank = _AGGRESSIVENESS_RANK.get(rule, 0)
-        current_rank = _AGGRESSIVENESS_RANK.get(wake_aggressiveness, 1)
-        should_wake = current_rank >= required_rank
-
-    if rule is None and event_type not in _WAKE_RULES:
+    if event_type not in _WAKE_RULES:
         # Unknown event → safe default: wake.
         should_wake = True
+    else:
+        rule = _WAKE_RULES[event_type]
+        if rule is None:
+            # Always-wake event.
+            should_wake = True
+        elif rule == "never":
+            should_wake = False
+        else:
+            # Wake if the supervisor's aggressiveness meets or exceeds the threshold.
+            required_rank = _AGGRESSIVENESS_RANK.get(rule, 0)
+            current_rank = _AGGRESSIVENESS_RANK.get(wake_aggressiveness, 1)
+            should_wake = current_rank >= required_rank
 
     activity.logger.info(
         "classify_event: event_type=%s aggressiveness=%s → wake=%s",

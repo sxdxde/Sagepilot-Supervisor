@@ -13,7 +13,6 @@ from datetime import timedelta
 from typing import Any
 
 from temporalio import workflow
-from temporalio.exceptions import CancelledError
 
 with workflow.unsafe.imports_passed_through():
     # Activity functions referenced by the workflow.
@@ -100,6 +99,7 @@ class OrderSupervisorWorkflow:
     @workflow.signal
     def receive_event(self, signal: EventSignal) -> None:
         """Deliver an external order event into the workflow."""
+        workflow.logger.info("Signal receive_event: type=%s", signal.event_type)
         self.pending_events.append(
             {
                 "event_type": signal.event_type,
@@ -121,18 +121,21 @@ class OrderSupervisorWorkflow:
     @workflow.signal
     def interrupt_workflow(self) -> None:
         """Pause the supervision loop (e.g. human review required)."""
+        workflow.logger.info("Signal interrupt_workflow received")
         self.is_interrupted = True
         self.current_status = "interrupted"
 
     @workflow.signal
     def resume_workflow(self) -> None:
         """Resume a previously interrupted workflow."""
+        workflow.logger.info("Signal resume_workflow received")
         self.is_interrupted = False
         self.current_status = "active"
 
     @workflow.signal
     def terminate_workflow(self) -> None:
         """Request a clean, early termination of the workflow."""
+        workflow.logger.info("Signal terminate_workflow received")
         self.should_terminate = True
 
     # ------------------------------------------------------------------
@@ -168,6 +171,7 @@ class OrderSupervisorWorkflow:
             update_run_status_activity,
             args=[input.run_id, "active"],
             start_to_close_timeout=timedelta(minutes=2),
+            schedule_to_close_timeout=timedelta(minutes=10),
         )
 
         # 2. First agent pass on workflow start.
@@ -181,6 +185,7 @@ class OrderSupervisorWorkflow:
                 update_run_status_activity,
                 args=[input.run_id, "sleeping"],
                 start_to_close_timeout=timedelta(minutes=2),
+                schedule_to_close_timeout=timedelta(minutes=10),
             )
 
             # --- b) Record expected next wake-up ----------------------------
@@ -216,6 +221,7 @@ class OrderSupervisorWorkflow:
                     update_run_status_activity,
                     args=[input.run_id, "interrupted"],
                     start_to_close_timeout=timedelta(minutes=2),
+                    schedule_to_close_timeout=timedelta(minutes=10),
                 )
                 await workflow.wait_condition(
                     lambda: not self.is_interrupted or self.should_terminate
@@ -244,12 +250,14 @@ class OrderSupervisorWorkflow:
             generate_final_output_activity,
             args=[input.run_id, self.memory_summary, self.current_status],
             start_to_close_timeout=timedelta(minutes=5),
+            schedule_to_close_timeout=timedelta(minutes=10),
         )
 
         await workflow.execute_activity(
             update_run_status_activity,
             args=[input.run_id, "completed"],
             start_to_close_timeout=timedelta(minutes=2),
+            schedule_to_close_timeout=timedelta(minutes=10),
         )
 
         # 5. Return completion summary.
@@ -294,6 +302,7 @@ class OrderSupervisorWorkflow:
                 }
             ],
             start_to_close_timeout=timedelta(minutes=5),
+            schedule_to_close_timeout=timedelta(minutes=10),
         )
 
         # Merge state updates returned by the activity.

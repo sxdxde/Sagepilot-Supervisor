@@ -93,7 +93,9 @@ export default function NewSupervisorPage() {
 
   // Form state
   const [name, setName] = useState("");
-  const [baseInstruction, setBaseInstruction] = useState("");
+  const [baseInstruction, setBaseInstruction] = useState(
+    "You are an AI supervisor monitoring e-commerce orders. Your goal is to ensure orders are fulfilled smoothly and customers are kept informed.\n\nProactively communicate with teams when issues arise. If a payment fails, alert the payments team immediately. If shipping is delayed, notify both logistics and the customer. Create internal notes to document your reasoning for each decision.\n\nAlways remain professional and solution-focused."
+  );
   const [wakeInterval, setWakeInterval] = useState(60);
   const [aggressiveness, setAggressiveness] = useState<"conservative" | "moderate" | "aggressive">("moderate");
   const [model, setModel] = useState("llama-3.3-70b-versatile");
@@ -104,6 +106,8 @@ export default function NewSupervisorPage() {
   // Submission state
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [instructionError, setInstructionError] = useState<string | null>(null);
 
   // Toggle action checkbox
   function toggleAction(id: string) {
@@ -119,11 +123,23 @@ export default function NewSupervisorPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setNameError(null);
+    setInstructionError(null);
 
+    let hasErrors = false;
+    if (!name.trim()) {
+      setNameError("Supervisor name is required.");
+      hasErrors = true;
+    }
+    if (!baseInstruction.trim()) {
+      setInstructionError("Base instruction is required.");
+      hasErrors = true;
+    }
     if (selectedActions.size === 0) {
       setError("Select at least one available action.");
-      return;
+      hasErrors = true;
     }
+    if (hasErrors) return;
 
     setLoading(true);
     try {
@@ -204,12 +220,12 @@ export default function NewSupervisorPage() {
               <input
                 id="name"
                 type="text"
-                required
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => { setName(e.target.value); setNameError(null); }}
                 placeholder="e.g. Standard Order Supervisor"
-                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder-slate-600 focus:border-indigo-500/60 focus:bg-white/8 focus:outline-none focus:ring-1 focus:ring-indigo-500/40 transition-all"
+                className={`w-full rounded-xl border bg-white/5 px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-1 transition-all ${nameError ? "border-red-500/60 focus:border-red-500/60 focus:ring-red-500/40" : "border-white/10 focus:border-indigo-500/60 focus:bg-white/8 focus:ring-indigo-500/40"}`}
               />
+              {nameError && <p className="mt-1 text-xs text-red-400">{nameError}</p>}
               <FieldHint>A short, descriptive name for this supervisor configuration.</FieldHint>
             </div>
 
@@ -218,17 +234,12 @@ export default function NewSupervisorPage() {
               <Label htmlFor="base_instruction" required>Base Instruction</Label>
               <textarea
                 id="base_instruction"
-                required
-                rows={6}
+                rows={8}
                 value={baseInstruction}
-                onChange={(e) => setBaseInstruction(e.target.value)}
-                placeholder={`You are an AI supervisor monitoring e-commerce orders. Your goal is to ensure orders are fulfilled smoothly and customers are kept informed.
-
-Proactively communicate with teams when issues arise. If a payment fails, alert the payments team immediately. If shipping is delayed, notify both logistics and the customer. Create internal notes to document your reasoning for each decision.
-
-Always remain professional and solution-focused.`}
-                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder-slate-600 focus:border-indigo-500/60 focus:bg-white/8 focus:outline-none focus:ring-1 focus:ring-indigo-500/40 transition-all resize-none leading-relaxed"
+                onChange={(e) => { setBaseInstruction(e.target.value); setInstructionError(null); }}
+                className={`w-full rounded-xl border bg-white/5 px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-1 transition-all resize-none leading-relaxed ${instructionError ? "border-red-500/60 focus:border-red-500/60 focus:ring-red-500/40" : "border-white/10 focus:border-indigo-500/60 focus:bg-white/8 focus:ring-indigo-500/40"}`}
               />
+              {instructionError && <p className="mt-1 text-xs text-red-400">{instructionError}</p>}
               <FieldHint>The core system prompt that shapes how the agent reasons and acts. Be specific about priorities and tone.</FieldHint>
             </div>
           </section>

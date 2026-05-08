@@ -19,11 +19,11 @@ from backend.database.db import Base
 # ---------------------------------------------------------------------------
 
 _ALL_ACTIONS = [
-    "send_email",
-    "send_sms",
-    "update_order",
-    "escalate",
-    "notify_customer",
+    "message_fulfillment_team",
+    "message_payments_team",
+    "message_logistics_team",
+    "message_customer",
+    "create_internal_note",
 ]
 
 

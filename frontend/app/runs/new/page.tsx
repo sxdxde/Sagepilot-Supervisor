@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { createRun, getSupervisors, type Supervisor } from "@/lib/api";
@@ -90,7 +90,15 @@ function SupervisorPreview({ supervisor }: { supervisor: Supervisor }) {
 // Page
 // ---------------------------------------------------------------------------
 
-export default function NewRunPage() {
+export default function NewRunPageWrapper() {
+  return (
+    <Suspense>
+      <NewRunPage />
+    </Suspense>
+  );
+}
+
+function NewRunPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const preselectedId = searchParams.get("supervisor_id") ?? "";
@@ -101,7 +109,9 @@ export default function NewRunPage() {
 
   // Form state
   const [supervisorId, setSupervisorId] = useState(preselectedId);
-  const [orderId, setOrderId] = useState("");
+  const [orderId, setOrderId] = useState(
+    () => `ORD-${Date.now().toString().slice(-8)}`
+  );
   const [customerName, setCustomerName] = useState("");
   const [itemsRaw, setItemsRaw] = useState("");
   const [amountRaw, setAmountRaw] = useState("");
@@ -276,7 +286,7 @@ export default function NewRunPage() {
                 placeholder="e.g. ORD-12345"
                 className={INPUT_CLS}
               />
-              <FieldHint>The unique identifier from your order management system.</FieldHint>
+              <FieldHint>Auto-generated suggestion — feel free to replace with your real order ID.</FieldHint>
             </div>
 
             {/* Customer name */}

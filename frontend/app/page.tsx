@@ -206,6 +206,7 @@ export default function DashboardPage() {
   const [supervisorsLoading, setSupervisorsLoading] = useState(true);
   const [runsError, setRunsError] = useState<string | null>(null);
   const [supervisorsError, setSupervisorsError] = useState<string | null>(null);
+  const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
   // Fetch supervisors once on mount.
   useEffect(() => {
@@ -222,6 +223,7 @@ export default function DashboardPage() {
         .then((data) => {
           setRuns(data);
           setRunsError(null);
+          setLastRefreshed(new Date());
         })
         .catch((e) => setRunsError(e.message))
         .finally(() => setRunsLoading(false));
@@ -317,10 +319,22 @@ export default function DashboardPage() {
                   </span>
                 )}
               </div>
-              {/* Live indicator */}
-              <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                Live
+              {/* Live indicator + last refreshed */}
+              <div className="flex items-center gap-3 text-xs text-slate-500">
+                {lastRefreshed && (
+                  <span>
+                    Updated{" "}
+                    {lastRefreshed.toLocaleTimeString(undefined, {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
+                )}
+                <span className="flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Live
+                </span>
               </div>
             </div>
 
