@@ -245,23 +245,37 @@ class OrderSupervisorWorkflow:
                 workflow.continue_as_new(input)
                 return  # continue_as_new raises internally; this is defensive
 
-        # 4. Generate and persist final output.
+        # 4. Determine terminal status before generating final output.
+        final_status = "terminated" if self.should_terminate else "completed"
+
+        # 5. Generate and persist final output with full context.
         final_output = await workflow.execute_activity(
             generate_final_output_activity,
-            args=[input.run_id, self.memory_summary, self.current_status],
+            args=[
+                input.run_id,
+                self.memory_summary,
+                final_status,
+                input.order_context,
+                {
+                    "name": input.supervisor_name,
+                    "model": input.model,
+                    "wake_aggressiveness": input.wake_aggressiveness,
+                    "wake_up_interval_minutes": input.wake_up_interval_minutes,
+                },
+            ],
             start_to_close_timeout=timedelta(minutes=5),
             schedule_to_close_timeout=timedelta(minutes=10),
         )
 
         await workflow.execute_activity(
             update_run_status_activity,
-            args=[input.run_id, "completed"],
+            args=[input.run_id, final_status],
             start_to_close_timeout=timedelta(minutes=2),
             schedule_to_close_timeout=timedelta(minutes=10),
         )
 
-        # 5. Return completion summary.
-        return {"status": "completed", "run_id": input.run_id}
+        # 6. Return completion summary.
+        return {"status": final_status, "run_id": input.run_id}
 
     # ------------------------------------------------------------------
     # Private helpers

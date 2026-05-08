@@ -207,162 +207,262 @@ async def run_agent_activity(ctx: dict) -> dict:
     activity_log_entries_written = 0
     actions_taken: list[dict] = []
     new_memory_summary = memory_summary
+    memory_was_updated = False
 
     logger.info(
         "Agent waking: run=%s trigger=%s events=%d",
         run_id, trigger, len(events_to_process),
     )
 
-    async with AsyncSessionLocal() as db:
-        # ------------------------------------------------------------------ #
-        # Step 1: log initial reasoning trigger                               #
-        # ------------------------------------------------------------------ #
-        await crud.log_activity(
-            db,
-            run_uuid,
-            "agent_reasoning",
-            {"trigger": trigger, "events_count": len(events_to_process)},
-        )
-        await db.commit()
-        activity_log_entries_written += 1
+    try:
+        async with AsyncSessionLocal() as db:
+            # -------------------------------------------------------------- #
+            # Step 1: log wake trigger                                         #
+            # -------------------------------------------------------------- #
+            await crud.log_activity(
+                db,
+                run_uuid,
+                "agent_reasoning",
+                {"trigger": trigger, "events_count": len(events_to_process)},
+            )
+            await db.commit()
+            activity_log_entries_written += 1
 
-        # ------------------------------------------------------------------ #
-        # Step 2: system prompt                                               #
-        # ------------------------------------------------------------------ #
-        system_prompt = f"""You are an AI order supervisor. Your job is to oversee order {order_id} and take appropriate actions.
+            # -------------------------------------------------------------- #
+            # Step 2: system prompt                                            #
+            # -------------------------------------------------------------- #
+            system_prompt = f"""You are an AI order supervisor. Your job is to oversee order {order_id} and take appropriate actions based on its current state and recent events.
 
 Base instruction: {base_instruction}
 
-Available actions: {available_actions}
-
 Wake aggressiveness: {wake_aggressiveness}
-- conservative: only act on critical issues (payment failed, refund, customer complaints)
-- moderate: act on delays and issues, check in periodically
-- aggressive: proactively communicate on all significant events
+- conservative: only act on critical issues (payment failed, refund requests, direct customer complaints)
+- moderate: act on delays and problems; check in periodically on normal progress
+- aggressive: proactively communicate on every significant event
 
-You will be given the current order context, recent events, and your memory summary.
-You must decide what actions to take and call the appropriate tools.
-After taking actions, update your memory summary.
-Always call record_reasoning to document your decision even if you take no action."""
+=== COMMUNICATION TOOLS (use based on aggressiveness and situation) ===
+These tools send messages to the relevant parties: {available_actions}
 
-        # ------------------------------------------------------------------ #
-        # Step 3: user message                                                #
-        # ------------------------------------------------------------------ #
-        user_message = f"""Order Context: {json.dumps(order_context, default=str)}
-Memory Summary: {memory_summary}
-Recent Events: {json.dumps(events_to_process, default=str)}
-Additional Instructions: {additional_instructions}
+=== REQUIRED STEPS — you MUST call both of these every single wake cycle ===
+
+1. record_reasoning — call this to document WHY you did or did not take action.
+   Call it even if you decide to do nothing.
+
+2. update_memory — call this EVERY CYCLE with an updated summary that includes:
+   - Current order status and what has happened so far
+   - Any issues encountered and how they were handled
+   - Actions you have taken and when
+   - What to watch for next
+   This is your only persistent memory across wake cycles. Skipping it loses all context."""
+
+            # -------------------------------------------------------------- #
+            # Step 3: user message                                             #
+            # -------------------------------------------------------------- #
+            user_message = f"""=== ORDER CONTEXT ===
+{json.dumps(order_context, default=str)}
+
+=== YOUR MEMORY FROM PREVIOUS CYCLES ===
+{memory_summary if memory_summary else "(no memory yet — this is your first wake cycle for this order)"}
+
+=== EVENTS SINCE LAST WAKE ===
+{json.dumps(events_to_process, default=str) if events_to_process else "(no new events — this is a scheduled check-in)"}
+
+=== ADDITIONAL INSTRUCTIONS ===
+{additional_instructions if additional_instructions else "(none)"}
+
 Current Time: {datetime.utcnow().isoformat()}
-Trigger: {trigger}
+Wake trigger: {trigger}
 
-Review the situation and take appropriate actions using the available tools."""
+Instructions:
+1. Review the order context, your memory, and the recent events.
+2. Decide what (if any) communication actions to take based on your aggressiveness setting.
+3. Call record_reasoning to document your decision.
+4. Call update_memory with an updated summary — THIS IS REQUIRED EVERY CYCLE."""
 
-        messages: list[dict] = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ]
+            messages: list[dict] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ]
 
-        # ------------------------------------------------------------------ #
-        # Steps 4 & 5: agentic tool-call loop (max 10 iterations)           #
-        # ------------------------------------------------------------------ #
-        groq = _get_groq()
-        max_iterations = 10
+            # -------------------------------------------------------------- #
+            # Steps 4 & 5: agentic tool-call loop (max 10 iterations)        #
+            # -------------------------------------------------------------- #
+            groq = _get_groq()
+            max_iterations = 10
 
-        for _iteration in range(max_iterations):
-            logger.debug("Agent loop iteration %d for run %s", _iteration + 1, run_id)
-            response = await groq.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=_AGENT_TOOLS,
-                tool_choice="auto",
-            )
+            for _iteration in range(max_iterations):
+                logger.debug("Agent loop iteration %d for run %s", _iteration + 1, run_id)
 
-            assistant_message = response.choices[0].message
-
-            # No tool calls → agent is done.
-            if not assistant_message.tool_calls:
-                messages.append(
-                    {"role": "assistant", "content": assistant_message.content or ""}
-                )
-                break
-
-            # Serialise assistant turn as a plain dict so the next API call
-            # receives a correctly-typed messages list throughout all iterations.
-            messages.append({
-                "role": "assistant",
-                "content": assistant_message.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in assistant_message.tool_calls
-                ],
-            })
-
-            # Execute each tool call and collect results.
-            for tool_call in assistant_message.tool_calls:
-                tool_name: str = tool_call.function.name
                 try:
-                    tool_args: dict[str, Any] = json.loads(tool_call.function.arguments)
-                except json.JSONDecodeError:
-                    tool_args = {}
-
-                tool_result = "done"
-
-                logger.info("Tool call: run=%s tool=%s", run_id, tool_name)
-
-                # ── Messaging / note tools ──────────────────────────────── #
-                if tool_name in _ACTION_TOOLS:
-                    action_record = {"tool_name": tool_name, "args": tool_args}
-                    actions_taken.append(action_record)
+                    response = await groq.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        tools=_AGENT_TOOLS,
+                        tool_choice="auto",
+                    )
+                except Exception as groq_err:
+                    logger.error(
+                        "Groq API error on iteration %d for run %s: %s",
+                        _iteration + 1, run_id, groq_err, exc_info=True,
+                    )
                     await crud.log_activity(
-                        db,
-                        run_uuid,
-                        "action_executed",
-                        action_record,
+                        db, run_uuid, "system",
+                        {"error": f"Groq API error: {groq_err}", "iteration": _iteration + 1},
                     )
                     await db.commit()
                     activity_log_entries_written += 1
+                    break
 
-                # ── Memory update ───────────────────────────────────────── #
-                elif tool_name == "update_memory":
-                    new_memory_summary = tool_args.get("new_summary", memory_summary)
-                    await crud.update_run(
-                        db, run_uuid, memory_summary=new_memory_summary
+                assistant_message = response.choices[0].message
+
+                # No tool calls → agent is done.
+                if not assistant_message.tool_calls:
+                    messages.append(
+                        {"role": "assistant", "content": assistant_message.content or ""}
                     )
-                    await db.commit()
+                    break
 
-                # ── Record reasoning ────────────────────────────────────── #
-                elif tool_name == "record_reasoning":
-                    await crud.log_activity(
-                        db,
-                        run_uuid,
-                        "agent_reasoning",
-                        {"outcome": tool_args.get("outcome", "")},
-                    )
-                    await db.commit()
-                    activity_log_entries_written += 1
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in assistant_message.tool_calls
+                    ],
+                })
 
-                # Append tool result so Groq continues the conversation.
-                messages.append(
-                    {
+                # Execute each tool call and collect results.
+                for tool_call in assistant_message.tool_calls:
+                    tool_name: str = tool_call.function.name
+                    try:
+                        tool_args: dict[str, Any] = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        tool_args = {}
+
+                    tool_result = "done"
+                    logger.info("Tool call: run=%s tool=%s", run_id, tool_name)
+
+                    # ── Messaging / note tools ────────────────────────────── #
+                    if tool_name in _ACTION_TOOLS:
+                        action_record = {"tool_name": tool_name, "args": tool_args}
+                        actions_taken.append(action_record)
+                        await crud.log_activity(db, run_uuid, "action_executed", action_record)
+                        await db.commit()
+                        activity_log_entries_written += 1
+
+                    # ── Memory update ─────────────────────────────────────── #
+                    elif tool_name == "update_memory":
+                        new_memory_summary = tool_args.get("new_summary", memory_summary)
+                        await crud.update_run(db, run_uuid, memory_summary=new_memory_summary)
+                        await db.commit()
+                        memory_was_updated = True
+
+                    # ── Record reasoning ──────────────────────────────────── #
+                    elif tool_name == "record_reasoning":
+                        await crud.log_activity(
+                            db, run_uuid, "agent_reasoning",
+                            {"outcome": tool_args.get("outcome", "")},
+                        )
+                        await db.commit()
+                        activity_log_entries_written += 1
+
+                    messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "content": tool_result,
-                    }
+                    })
+
+            # -------------------------------------------------------------- #
+            # Step 6: force a real memory update if the agent skipped it      #
+            # This makes one more Groq call with tool_choice locked to        #
+            # update_memory so the model writes a proper summary, not a       #
+            # static template.                                                 #
+            # -------------------------------------------------------------- #
+            if not memory_was_updated:
+                logger.warning(
+                    "Agent skipped update_memory for run=%s — forcing dedicated call", run_id
                 )
+                try:
+                    force_messages = messages + [{
+                        "role": "user",
+                        "content": (
+                            "You have not called update_memory yet this cycle. "
+                            "Call it now. Write a concise but complete summary covering: "
+                            "the current order status, what events occurred, what actions "
+                            "you took or decided not to take and why, and what to watch for next."
+                        ),
+                    }]
+                    forced_resp = await groq.chat.completions.create(
+                        model=model,
+                        messages=force_messages,
+                        tools=_AGENT_TOOLS,
+                        tool_choice={"type": "function", "function": {"name": "update_memory"}},
+                    )
+                    forced_tcs = forced_resp.choices[0].message.tool_calls
+                    if forced_tcs:
+                        try:
+                            args = json.loads(forced_tcs[0].function.arguments)
+                        except json.JSONDecodeError:
+                            args = {}
+                        summary = args.get("new_summary", "").strip()
+                        if summary:
+                            new_memory_summary = summary
+                            await crud.update_run(db, run_uuid, memory_summary=summary)
+                            await db.commit()
+                            memory_was_updated = True
+                            logger.info("Forced memory update written for run=%s", run_id)
+                except Exception as force_err:
+                    logger.warning(
+                        "Forced memory update Groq call failed for run=%s: %s", run_id, force_err
+                    )
+
+    except Exception as exc:
+        logger.error(
+            "run_agent_activity fatal error for run=%s: %s", run_id, exc, exc_info=True
+        )
+        try:
+            async with AsyncSessionLocal() as db:
+                await crud.log_activity(
+                    db, run_uuid, "system",
+                    {"error": f"Activity failed: {exc}", "trigger": trigger},
+                )
+                await db.commit()
+        except Exception:
+            pass
+        raise
 
     # ------------------------------------------------------------------ #
-    # Step 6: return result dict consumed by the workflow                 #
+    # Step 7: last-resort static fallback (only if forced call also fails)#
+    # ------------------------------------------------------------------ #
+    if not memory_was_updated:
+        logger.warning("All memory update attempts failed for run=%s — writing static fallback", run_id)
+        fallback = (
+            f"Wake trigger: {trigger}. "
+            f"Events processed: {len(events_to_process)}. "
+            f"Actions taken: {len(actions_taken)}. "
+            f"(Memory update failed — check worker logs for errors.)"
+        )
+        try:
+            async with AsyncSessionLocal() as db:
+                await crud.update_run(db, run_uuid, memory_summary=fallback)
+                await db.commit()
+        except Exception as db_err:
+            logger.error("Failed to write static fallback memory for run=%s: %s", run_id, db_err)
+        new_memory_summary = fallback
+
+    # ------------------------------------------------------------------ #
+    # Step 7: return result dict consumed by the workflow                 #
     # ------------------------------------------------------------------ #
     logger.info(
-        "Agent sleeping: run=%s actions=%d log_entries=%d",
-        run_id, len(actions_taken), activity_log_entries_written,
+        "Agent sleeping: run=%s actions=%d log_entries=%d memory_updated=%s",
+        run_id, len(actions_taken), activity_log_entries_written, memory_was_updated,
     )
     return {
         "actions_taken": actions_taken,

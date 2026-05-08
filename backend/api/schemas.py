@@ -30,7 +30,7 @@ class SupervisorCreate(BaseModel):
     name: str
     base_instruction: str
     available_actions: list[str] = Field(default_factory=lambda: list(_DEFAULT_ACTIONS))
-    wake_up_interval_minutes: int = 60
+    wake_up_interval_minutes: int = 2
     wake_aggressiveness: str = "moderate"
     model: str = "llama-3.3-70b-versatile"
 

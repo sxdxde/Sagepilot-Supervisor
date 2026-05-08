@@ -39,7 +39,7 @@ class Supervisor(Base):
         JSON, nullable=False, default=lambda: list(_ALL_ACTIONS)
     )
     wake_up_interval_minutes: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=60
+        Integer, nullable=False, default=2
     )
     # conservative | moderate | aggressive
     wake_aggressiveness: Mapped[str] = mapped_column(

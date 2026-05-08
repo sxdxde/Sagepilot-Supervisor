@@ -2,7 +2,7 @@ export function LoadingSpinner({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
   const dims = { sm: "w-4 h-4", md: "w-5 h-5", lg: "w-8 h-8" };
   return (
     <svg
-      className={`${dims[size]} animate-spin text-slate-400`}
+      className={`${dims[size]} animate-spin text-gray-400`}
       fill="none"
       viewBox="0 0 24 24"
     >
@@ -25,8 +25,8 @@ export function LoadingSpinner({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
 
 export function FullPageSpinner() {
   return (
-    <div className="min-h-[calc(100vh-3rem)] bg-[#0a0a0f] flex items-center justify-center">
-      <div className="flex items-center gap-3 text-slate-400 text-sm">
+    <div className="min-h-[calc(100vh-3.5rem)] bg-gray-50 flex items-center justify-center">
+      <div className="flex items-center gap-3 text-gray-400 text-sm">
         <LoadingSpinner size="md" />
         Loading…
       </div>

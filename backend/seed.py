@@ -43,7 +43,7 @@ _DEFAULT_SUPERVISOR = {
         "message_customer",
         "create_internal_note",
     ],
-    "wake_up_interval_minutes": 60,
+    "wake_up_interval_minutes": 2,
     "wake_aggressiveness": "moderate",
     "model": "llama-3.3-70b-versatile",
 }
