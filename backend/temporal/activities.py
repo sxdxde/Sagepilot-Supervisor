@@ -30,17 +30,12 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Shared Groq client (instantiated once per worker process)
+# Groq client — created fresh each call so .env key changes take effect
+# without needing a worker restart.
 # ---------------------------------------------------------------------------
 
-_groq_client: AsyncGroq | None = None
-
-
 def _get_groq() -> AsyncGroq:
-    global _groq_client
-    if _groq_client is None:
-        _groq_client = AsyncGroq(api_key=settings.groq_api_key)
-    return _groq_client
+    return AsyncGroq(api_key=settings.groq_api_key)
 
 
 # ---------------------------------------------------------------------------
