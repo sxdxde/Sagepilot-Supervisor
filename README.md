@@ -1,5 +1,8 @@
 # Order Supervisor
 
+## Demo Video
+https://drive.google.com/file/d/1Jm6PuNkZq9S6JsAO_pGZ16BBBjxYSt9q/view?usp=sharing
+
 A long-running AI supervisor built with **Temporal**, **FastAPI**, and **Next.js**.
 
 Each order gets its own persistent Temporal workflow that sleeps between wake cycles, wakes on external events, calls a Groq-powered agent to reason and act, and completes when the order reaches a terminal state.
