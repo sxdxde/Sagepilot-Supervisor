@@ -1,4 +1,4 @@
-# Sagepilot — AI Order Supervisor
+# Sagepilot — AI Order Supervisor (Assignment)
 
 ## Demo Video
 https://drive.google.com/file/d/1Jm6PuNkZq9S6JsAO_pGZ16BBBjxYSt9q/view?usp=sharing
